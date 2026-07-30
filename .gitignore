@@ -1,5 +1,7 @@
 *.csv
+*.pt
+*.nnue
 stockfish
 .DS_Store
 __pycache__/
-
+old_csv/

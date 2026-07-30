@@ -3,10 +3,10 @@ import torch.nn as nn
 
 
 NUM_INPUTS = 64 * 12 # 768
-L1 = 1024
+L1 = 256
 
 
-class NNUE(nn.Module):
+class NNUEModel(nn.Module):
     def __init__(self):
         super().__init__()
         self.input = nn.Linear(NUM_INPUTS, L1)

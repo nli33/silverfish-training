@@ -4,6 +4,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 
+FLIP = 0b111000
 
 PIECE_TO_INDEX = {
     chess.PAWN:   0,
@@ -14,10 +15,16 @@ PIECE_TO_INDEX = {
     chess.KING:   5,
 }
 
-def feature_index_for_perspective(perspective, piece_color, piece_type, sq: int) -> int:
+def feature(perspective, piece_color, piece_type, sq: int) -> int:
     friendly = (piece_color == perspective)
     piece_idx = piece_type + (0 if friendly else 6)  # 0..11
+    if perspective == chess.BLACK:
+        sq ^= FLIP
     return 64 * piece_idx + sq  # 0..767
+
+
+assert feature(chess.WHITE, chess.WHITE, chess.PAWN, 12) \
+        == feature(chess.BLACK, chess.BLACK, chess.PAWN, 12 ^ FLIP)
 
 
 def encode_board(board: chess.Board, perspective: bool):
@@ -28,8 +35,8 @@ def encode_board(board: chess.Board, perspective: bool):
         if piece is None:
             continue
         
-        feature = feature_index_for_perspective(perspective, piece.color, PIECE_TO_INDEX[piece.piece_type], square)
-        x[feature] = 1.0
+        f = feature(perspective, piece.color, PIECE_TO_INDEX[piece.piece_type], square)
+        x[f] = 1.0
     
     return x
 

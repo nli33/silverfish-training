@@ -1,57 +1,64 @@
+"""
+export_nnue_float.py
+
+Exports a trained PyTorch NNUE model to a float32 .nnue file.
+No quantization. Reference implementation for correctness.
+
+Usage:
+    python export_nnue_float.py nnue.pt model.nnue
+"""
+
+import sys
+import struct
+from pathlib import Path
 import torch
 import numpy as np
-from model import NNUE
-
-SCALE = 256
-OUT_FILE = "engine.nnue"
+from model import NUM_INPUTS, L1
 
 
-def quantize(w, scale):
-    q = np.round(w * scale)
-    q = np.clip(q, -32768, 32767)
-    return q.astype(np.int16)
+def main():
+    if len(sys.argv) != 3:
+        print("Usage: python export_nnue_float.py nnue.pt out.nnue")
+        sys.exit(1)
 
+    checkpoint_path = Path(sys.argv[1])
+    out_path = Path(sys.argv[2])
 
-def quantize_bias(b, scale):
-    q = np.round(b * scale)
-    q = np.clip(q, -2**31, 2**31 - 1)
-    return q.astype(np.int32)
+    ckpt = torch.load(checkpoint_path, map_location="cpu")
+    state_dict = ckpt.get("model_state", ckpt)
 
+    # Extract weights
+    W_in = state_dict["input.weight"].cpu().numpy().astype(np.float32)
+    b_in = state_dict["input.bias"].cpu().numpy().astype(np.float32)
+    W_out = state_dict["output.weight"].cpu().numpy().astype(np.float32)
+    b_out = state_dict["output.bias"].cpu().numpy().astype(np.float32)
 
-def export_nnue(checkpoint_path):
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    assert W_in.shape == (L1, NUM_INPUTS)
+    assert b_in.shape == (L1,)
+    assert W_out.shape == (1, 2 * L1)
+    assert b_out.shape == (1,)
 
-    model = NNUE()
-    model.load_state_dict(checkpoint["model_state"])
-    model.eval()
+    with open(out_path, "wb") as f:
+        f.write(b"NNUE")
+        f.write(struct.pack("<I", 1))           # version
+        f.write(struct.pack("<I", NUM_INPUTS))
+        f.write(struct.pack("<I", L1))
 
-    # extract weights
-    in_w = model.input.weight.detach().cpu().numpy()   # [1024, 768]
-    in_b = model.input.bias.detach().cpu().numpy()     # [1024]
+        # Weights (row-major)
+        params = {
+            "W_in": W_in,
+            "b_in": b_in,
+            "W_out": W_out,
+            "b_out": b_out,
+        }
+        
+        for name, param in params.items():
+            f.write(param.tobytes(order="C"))
+            print(name, param.shape)
 
-    out_w = model.output.weight.detach().cpu().numpy() # [1, 2048]
-    out_b = model.output.bias.detach().cpu().numpy()   # [1]
-
-    # quantize
-    in_w_q = quantize(in_w, SCALE)
-    in_b_q = quantize_bias(in_b, SCALE)
-
-    out_w_q = quantize(out_w, SCALE)
-    out_b_q = quantize_bias(out_b, SCALE)
-
-    # write binary
-    with open(OUT_FILE, "wb") as f:
-        f.write(in_w_q.astype("<i2").tobytes())
-        f.write(in_b_q.astype("<i4").tobytes())
-        f.write(out_w_q.astype("<i2").tobytes())
-        f.write(out_b_q.astype("<i4").tobytes())
-
-    print(f"Exported NNUE to {OUT_FILE}")
-    print("Scale:", SCALE)
-    print("Input layer:", in_w_q.shape)
-    print("Output layer:", out_w_q.shape)
+    print(f"Wrote float NNUE to {out_path}")
 
 
 if __name__ == "__main__":
-    export_nnue("nnue_checkpoint.pt")
+    main()
 
