@@ -1,3 +1,5 @@
+import argparse
+
 from dataset import NNUEDataset
 from model import NNUEModel
 import torch
@@ -6,36 +8,39 @@ from pathlib import Path
 from torch.utils.data import DataLoader
 
 
-checkpoint_path = "nnue_256.pt"
+checkpoint_path = "nnue_256_depth12.pt"
 train_path = "train_reduced.csv"
 val_path = "validation.csv"
 test_path = "test.csv"
-num_epochs = 3
+num_epochs = 11
+
+device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 
 
 def train():
     train_dataset = NNUEDataset(train_path)
     val_dataset = NNUEDataset(val_path)
 
+    # num_workers=0: NNUEDataset precomputes everything in __init__, so
+    # __getitem__ is cheap; worker processes would just re-pay pickling
+    # cost for the whole precomputed entries list every epoch.
     train_loader = DataLoader(
         train_dataset,
         batch_size=256,
         shuffle=True,
-        num_workers=2,
-        pin_memory=True
+        num_workers=0,
     )
     val_loader = DataLoader(
         val_dataset,
         batch_size=256,
         shuffle=True,
-        num_workers=2,
-        pin_memory=True
+        num_workers=0,
     )
     
     nnue_checkpoint_path = Path(checkpoint_path)
     loss_fn = nn.MSELoss()
 
-    model = NNUEModel()
+    model = NNUEModel().to(device)
     optimizer = torch.optim.Adam(
         model.parameters(),
         lr=1e-4,
@@ -69,6 +74,7 @@ def train():
         train_batches = 0
 
         for x_w, x_b, stm, y in train_loader:
+            x_w, x_b, stm, y = x_w.to(device), x_b.to(device), stm.to(device), y.to(device)
             pred = model(x_w, x_b, stm)
             loss = loss_fn(pred, y)
 
@@ -89,6 +95,7 @@ def train():
 
         with torch.no_grad():
             for x_w, x_b, stm, y in val_loader:
+                x_w, x_b, stm, y = x_w.to(device), x_b.to(device), stm.to(device), y.to(device)
                 pred = model(x_w, x_b, stm)
                 loss = loss_fn(pred, y)
 
@@ -124,7 +131,7 @@ def test():
 
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
 
-    model = NNUEModel()
+    model = NNUEModel().to(device)
     model.load_state_dict(checkpoint["model_state"])
     model.eval()
 
@@ -135,6 +142,7 @@ def test():
 
     with torch.no_grad():
         for x_w, x_b, stm, y in loader:
+            x_w, x_b, stm, y = x_w.to(device), x_b.to(device), stm.to(device), y.to(device)
             pred = model(x_w, x_b, stm)
             loss = loss_fn(pred, y)
 
@@ -148,5 +156,11 @@ def test():
 
 
 if __name__ == '__main__':
-    #train()
-    test()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("mode", choices=["train", "test"])
+    args = parser.parse_args()
+
+    if args.mode == "train":
+        train()
+    else:
+        test()

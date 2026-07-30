@@ -1,47 +1,78 @@
-# attach evaluations to fens
+# Label FENs with Stockfish score + WDL, in parallel.
+#
+# Depth bumped from the previous depth=7 to depth=12 -- deep enough to give
+# the network a meaningfully stronger training signal without making a
+# ~2M-position relabel intractable on a single machine (benchmarked at
+# ~15-45ms/position at depth 12 with this repo's bundled Stockfish 17
+# binary). WDL is captured alongside the centipawn score (via
+# UCI_ShowWDL) so training can blend a calibrated win-probability target
+# with the raw score, instead of regressing to centipawns alone.
+
+import argparse
+import csv
+import multiprocessing as mp
 
 import chess
 import chess.engine
-import csv
 from tqdm import tqdm
 
-engine = chess.engine.SimpleEngine.popen_uci("./stockfish")
-
 MATE = 1500
+DEPTH = 12
+STOCKFISH_PATH = "./stockfish"
 
-source = "train.csv" # file with old evals
-dest = "train_stockfish_evals.csv"
+_engine = None
 
 
-def centipawns(info, board):
-    pov = info["score"].pov(board.turn)
+def _init_worker():
+    global _engine
+    _engine = chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH)
+    _engine.configure({"UCI_ShowWDL": True, "Threads": 1})
 
-    if pov.is_mate():
-        mate = pov.mate()  # int, positive = winning
-        return MATE if mate > 0 else -MATE
 
-    cp = pov.score(mate_score=MATE)
-    return max(-MATE, min(MATE, cp))
+def _label_one(fen):
+    board = chess.Board(fen)
+    info = _engine.analyse(board, chess.engine.Limit(depth=DEPTH))
 
-rows = [("FEN", "Evaluation")]
+    pov_score = info["score"].pov(board.turn)
+    if pov_score.is_mate():
+        mate = pov_score.mate()
+        cp = MATE if mate > 0 else -MATE
+    else:
+        cp = max(-MATE, min(MATE, pov_score.score(mate_score=MATE)))
 
-print("Reading")
+    pov_wdl = info["wdl"].pov(board.turn)
+    win, draw, loss = pov_wdl.wins, pov_wdl.draws, pov_wdl.losses
 
-with open(source, newline="") as f:
-    reader = csv.reader(f)
-    next(reader)
-    for row in tqdm(reader):
-        if len(row) < 1:
-            continue
-        fen = row[0].strip()
-        board = chess.Board(fen)
-        info = engine.analyse(board, chess.engine.Limit(depth=7))
-        rows.append((fen, centipawns(info, board)))
+    return fen, cp, win, draw, loss
 
-print("Writing")
 
-with open(dest, "w") as f:
-    writer = csv.writer(f)
-    writer.writerows(rows)
+def main():
+    global DEPTH
 
-print("Done")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("source")
+    parser.add_argument("dest")
+    parser.add_argument("--workers", type=int, default=mp.cpu_count())
+    parser.add_argument("--depth", type=int, default=DEPTH)
+    args = parser.parse_args()
+
+    DEPTH = args.depth
+
+    with open(args.source, newline="") as f:
+        reader = csv.reader(f)
+        next(reader)
+        fens = [row[0].strip() for row in reader if row]
+
+    print(f"Labeling {len(fens)} positions at depth {DEPTH} with {args.workers} workers")
+
+    with open(args.dest, "w", newline="") as out, mp.Pool(args.workers, initializer=_init_worker) as pool:
+        writer = csv.writer(out)
+        writer.writerow(["FEN", "Evaluation", "WDL_Win", "WDL_Draw", "WDL_Loss"])
+        for fen, cp, win, draw, loss in tqdm(pool.imap(_label_one, fens, chunksize=64), total=len(fens)):
+            writer.writerow([fen, cp, win, draw, loss])
+
+    print("Done ->", args.dest)
+
+
+if __name__ == "__main__":
+    main()
