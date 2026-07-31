@@ -17,9 +17,19 @@ num_epochs = 11
 device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 
 
-def train():
-    train_dataset = NNUEDataset(train_path)
-    val_dataset = NNUEDataset(val_path)
+def train(train_csv=None, val_csv=None, out_checkpoint=None, epochs=None,
+          lr=1e-4, init_from=None):
+    """init_from (if given, and different from out_checkpoint) loads only
+    model weights -- not optimizer/scheduler state -- since fine-tuning on
+    a new dataset at a new LR shouldn't resume the previous run's Adam
+    momentum or ReduceLROnPlateau schedule."""
+    train_csv = train_csv or train_path
+    val_csv = val_csv or val_path
+    out_checkpoint = out_checkpoint or checkpoint_path
+    epochs = epochs if epochs is not None else num_epochs
+
+    train_dataset = NNUEDataset(train_csv)
+    val_dataset = NNUEDataset(val_csv)
 
     # num_workers=0: NNUEDataset precomputes everything in __init__, so
     # __getitem__ is cheap; worker processes would just re-pay pickling
@@ -36,14 +46,14 @@ def train():
         shuffle=True,
         num_workers=0,
     )
-    
-    nnue_checkpoint_path = Path(checkpoint_path)
+
+    nnue_checkpoint_path = Path(out_checkpoint)
     loss_fn = nn.MSELoss()
 
     model = NNUEModel().to(device)
     optimizer = torch.optim.Adam(
         model.parameters(),
-        lr=1e-4,
+        lr=lr,
         weight_decay=1e-5
     )
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -57,7 +67,10 @@ def train():
 
     start_epoch = 0
 
-    if nnue_checkpoint_path.is_file():
+    if init_from is not None:
+        init_checkpoint = torch.load(Path(init_from), map_location="cpu")
+        model.load_state_dict(init_checkpoint["model_state"])
+    elif nnue_checkpoint_path.is_file():
         checkpoint = torch.load(nnue_checkpoint_path, map_location="cpu")
         model.load_state_dict(checkpoint["model_state"])
         optimizer.load_state_dict(checkpoint["optimizer_state"])
@@ -66,7 +79,7 @@ def train():
 
     best_val_loss = float("inf")
 
-    for epoch in range(start_epoch, start_epoch + num_epochs):
+    for epoch in range(start_epoch, start_epoch + epochs):
         print("Epoch", epoch)
 
         model.train()
@@ -157,10 +170,23 @@ def test():
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=["train", "test"])
+    parser.add_argument("mode", choices=["train", "test", "finetune"])
+    parser.add_argument("--train-csv")
+    parser.add_argument("--val-csv")
+    parser.add_argument("--out-checkpoint")
+    parser.add_argument("--init-from")
+    parser.add_argument("--epochs", type=int)
+    parser.add_argument("--lr", type=float, default=1e-4)
     args = parser.parse_args()
 
-    if args.mode == "train":
-        train()
+    if args.mode in ("train", "finetune"):
+        train(
+            train_csv=args.train_csv,
+            val_csv=args.val_csv,
+            out_checkpoint=args.out_checkpoint,
+            epochs=args.epochs,
+            lr=args.lr,
+            init_from=args.init_from,
+        )
     else:
         test()
